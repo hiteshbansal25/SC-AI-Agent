@@ -1,35 +1,28 @@
 import streamlit as st
-from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives import serialization
 
-# Fetch and format the key from secrets
-private_key_str = st.secrets["connections"]["snowflake"]["private_key"]
+# 1. Retrieve the private key string from Streamlit secrets
+pem_private_key_str = st.secrets["connections.snowflake"]["private_key"]
 
-if "BEGIN PRIVATE KEY" not in private_key_str:
-    private_key_str = f"-----BEGIN PRIVATE KEY-----\n{private_key_str}\n-----END PRIVATE KEY-----"
-
-# Prepare bytes object
-raw_key = private_key_str.strip().encode()
-
-p_key = serialization.load_pem_private_key(
-    raw_key,
+# 2. Load the PEM key string into a private key object
+private_key_obj = serialization.load_pem_private_key(
+    pem_private_key_str.encode('utf-8'),
     password=None,
-    backend=default_backend()
 )
 
-private_key_bytes = p_key.private_bytes(
+# 3. Serialize the private key object into DER bytes
+private_key_der = private_key_obj.private_bytes(
     encoding=serialization.Encoding.DER,
     format=serialization.PrivateFormat.PKCS8,
     encryption_algorithm=serialization.NoEncryption()
 )
 
-# Connect to Snowflake
+# 4. Connect to Snowflake using the converted DER bytes
 conn = st.connection(
     "snowflake",
     type="snowflake",
-    private_key=private_key_bytes
+    private_key=private_key_der
 )
-
 
 import pandas as pd
 
