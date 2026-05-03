@@ -30,11 +30,6 @@ st.markdown("### Universal AI Agent (Prompt-Based)")
 
 import pandas as pd
 
-# Connects to Snowflake using Streamlit's built-in connection manager
-conn = st.connection("snowflake", type="snowflake")
-
-st.title("Ecolab Supply Chain Intelligence")
-st.markdown("### Universal AI Agent (Prompt-Based)")
 
 business_logic = """
 You are a Snowflake SQL expert. Use these EXACT table and column names:
