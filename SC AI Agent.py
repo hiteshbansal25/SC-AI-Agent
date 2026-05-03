@@ -1,28 +1,32 @@
 import streamlit as st
 from cryptography.hazmat.primitives import serialization
 
-# 1. Retrieve the private key string from Streamlit secrets
-pem_private_key_str = st.secrets["connections.snowflake"]["private_key"]
+# Retrieve the key using nested dict access (st.secrets["connections"]["snowflake"])
+pem_private_key_str = st.secrets["connections"]["snowflake"]["private_key"]
 
-# 2. Load the PEM key string into a private key object
+# Load the PEM key string into a private key object
 private_key_obj = serialization.load_pem_private_key(
     pem_private_key_str.encode('utf-8'),
     password=None,
 )
 
-# 3. Serialize the private key object into DER bytes
+# Serialize the private key object into DER bytes
 private_key_der = private_key_obj.private_bytes(
     encoding=serialization.Encoding.DER,
     format=serialization.PrivateFormat.PKCS8,
     encryption_algorithm=serialization.NoEncryption()
 )
 
-# 4. Connect to Snowflake using the converted DER bytes
+# Connect to Snowflake using the updated bytes variable
 conn = st.connection(
     "snowflake",
     type="snowflake",
     private_key=private_key_der
 )
+
+st.title("Ecolab Supply Chain Intelligence")
+st.markdown("### Universal AI Agent (Prompt-Based)")
+
 
 import pandas as pd
 
