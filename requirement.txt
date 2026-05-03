@@ -1,0 +1,4 @@
+snowflake-snowpark-python
+pandas
+snowflake-connector-python[secure-uptodate]
+streamlit
