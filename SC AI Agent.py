@@ -1,34 +1,48 @@
 import streamlit as st
-from cryptography.hazmat.primitives import serialization
-
-# Retrieve the key using nested dict access (st.secrets["connections"]["snowflake"])
-pem_private_key_str = st.secrets["connections"]["snowflake"]["private_key"]
-
-# Load the PEM key string into a private key object
-private_key_obj = serialization.load_pem_private_key(
-    pem_private_key_str.encode('utf-8'),
-    password=None,
-)
-
-# Serialize the private key object into DER bytes
-private_key_der = private_key_obj.private_bytes(
-    encoding=serialization.Encoding.DER,
-    format=serialization.PrivateFormat.PKCS8,
-    encryption_algorithm=serialization.NoEncryption()
-)
-
-# Connect to Snowflake using the updated bytes variable
-conn = st.connection(
-    "snowflake",
-    type="snowflake",
-    private_key=private_key_der
-)
-
-st.title("Ecolab Supply Chain Intelligence")
-st.markdown("### Universal AI Agent (Prompt-Based)")
-
-
 import pandas as pd
+from cryptography.hazmat.primitives import serialization
+import io
+
+# --- 1. SNOWFLAKE CONNECTION SETUP ---
+def get_snowflake_conn():
+    pem_private_key_str = st.secrets["connections"]["snowflake"]["private_key"]
+    private_key_obj = serialization.load_pem_private_key(
+        pem_private_key_str.encode('utf-8'),
+        password=None,
+    )
+    private_key_der = private_key_obj.private_bytes(
+        encoding=serialization.Encoding.DER,
+        format=serialization.PrivateFormat.PKCS8,
+        encryption_algorithm=serialization.NoEncryption()
+    )
+    return st.connection("snowflake", type="snowflake", private_key=private_key_der)
+
+conn = get_snowflake_conn()
+
+# --- 2. CUSTOM THEMING (Ecolab Blue & Castrol Green) ---
+st.set_page_config(page_title="SC Control Tower", layout="wide")
+st.markdown("""
+    <style>
+    .main { background-color: #ffffff; }
+    h1 { color: #0072CE; } /* Ecolab Blue */
+    h3 { color: #008240; } /* Castrol Green */
+    .stDataFrame { border: 1px solid #e6e9ef; border-radius: 5px; }
+    footer { visibility: hidden; }
+    .custom-footer {
+        text-align: center;
+        padding: 20px;
+        color: #666;
+        font-size: 14px;
+        border-top: 1px solid #eee;
+        margin-top: 50px;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+
+# --- 3. TITLE & HEADER ---
+st.title("SC Control Tower by Hitesh")
+st.markdown("### AI Agent and Data Visualization")
+
 
 
 business_logic = """
@@ -73,7 +87,10 @@ Follow these rules strictly:
 - Warehouse codes are case-sensitive; do not guess them unless provided.
 """
 
-query = st.text_input("Ask a supply chain question:", placeholder="e.g., Which items have DOS > DOH?")
+
+with st.container():
+    st.info("**Sample Questions:** 'Show me items where DOS > DOH' | 'What is our current OTIF percentage?' | 'List top 5 plants by stock'")
+    query = st.chat_input("Ask the SC Agent a question...")
 
 if query:
     with st.spinner("Generating SQL and analyzing..."):
@@ -113,3 +130,52 @@ if query:
             st.error(f"Error: {e}")
             if 'clean_sql' in locals():
                 st.code(clean_sql, language="sql")
+
+st.divider()
+
+# --- 5. DATA VISUALIZATION TABLES ---
+def display_modern_table(table_id, title):
+    st.subheader(f"📊 {title}")
+    
+    # Fetch Data
+    df = conn.query(f"SELECT * FROM {table_id}")
+    
+    # Dynamic Filter Dropdowns
+    with st.expander(f"Filter {title} Columns"):
+        f_cols = st.columns(4)
+        filtered_df = df.copy()
+        for i, col_name in enumerate(df.columns):
+            options = df[col_name].unique()
+            selected = f_cols[i % 4].multiselect(f"{col_name}", options=options, key=f"filt_{table_id}_{col_name}")
+            if selected:
+                filtered_df = filtered_df[filtered_df[col_name].isin(selected)]
+
+    # Display Table
+    st.dataframe(filtered_df, use_container_width=True, hide_index=True)
+
+    # Excel Export (Filtered data only)
+    buffer = io.BytesIO()
+    with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
+        filtered_df.to_excel(writer, index=False, sheet_name='Data')
+    
+    st.download_button(
+        label=f"💾 Export Filtered {title} to Excel",
+        data=buffer.getvalue(),
+        file_name=f"{title.replace(' ', '_')}.xlsx",
+        mime="application/vnd.ms-excel",
+        key=f"btn_{table_id}"
+    )
+    st.write("---")
+
+# Render the 3 tables
+display_modern_table("ECOLAB_SC_POC.PUBLIC.SALES_DATA", "Sales Data")
+display_modern_table("ECOLAB_SC_POC.PUBLIC.ECOLAB_INVENTORY", "Inventory Levels")
+display_modern_table("ECOLAB_SC_POC.PUBLIC.FORECAST_DATA", "Demand Forecasts")
+
+# --- 6. FOOTER ---
+st.markdown("""
+    <div class="custom-footer">
+        © 2026 SC Control Tower. All rights reserved. <br>
+        <b>Designed by Hitesh Bansal</b>
+    </div>
+    """, unsafe_allow_html=True)
