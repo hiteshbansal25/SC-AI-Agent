@@ -151,7 +151,7 @@ def display_modern_table(table_id, title):
                 filtered_df = filtered_df[filtered_df[col_name].isin(selected)]
 
     # Display Table
-    st.dataframe(filtered_df, use_container_width=True, hide_index=True)
+    st.dataframe(filtered_df, width="stretch", hide_index=True)
 
     # Excel Export (Filtered data only)
     buffer = io.BytesIO()
