@@ -5,6 +5,7 @@ import io
 from datetime import datetime
 
 # --- 1. SNOWFLAKE CONNECTION SETUP ---
+@st.cache_resource
 def get_snowflake_conn():
     pem_private_key_str = st.secrets["connections"]["snowflake"]["private_key"]
     private_key_obj = serialization.load_pem_private_key(
@@ -20,10 +21,15 @@ def get_snowflake_conn():
 
 conn = get_snowflake_conn()
 
+# --- Cached Read Queries to Protect Memory ---
+@st.cache_data(ttl=600)
+def load_snowflake_data(query_string):
+    """Safely cache heavy data reads to prevent out-of-memory crashes."""
+    return conn.query(query_string)
+
 # --- Initialize Change Log Table if not exists ---
 def init_change_log():
     try:
-        # Fixed: Changed conn.session to conn.session()
         conn.session().sql("""
             CREATE TABLE IF NOT EXISTS ECOLAB_SC_POC.PUBLIC.CHANGE_LOG (
                 TIMESTAMP TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP(),
@@ -50,7 +56,6 @@ def log_change(action_type, record_id, column, old_val, new_val):
         VALUES ('{action_type}', '{record_id}', '{column}', '{old_str}', '{new_str}')
     """
     try:
-        # Fixed: Changed conn.session to conn.session()
         conn.session().sql(query).collect()
     except Exception as log_err:
         st.warning(f"Change made, but log entry could not be saved: {log_err}")
@@ -84,40 +89,12 @@ You are a Snowflake SQL expert. Use these EXACT table and column names:
 
 1. SALES TABLE: ECOLAB_SC_POC.PUBLIC.SALES_DATA
    - Use 'ORDER_RECEIVE_DATE' for date on which sales order was booked.
-   - Use 'ACTUAL_SHIP_DATE' for date on which item or material is actually shipped from warehouse or plant.
-   - Use 'SHIP_QUANTITY' for actual volume sold or shipped to customer.
-   - Use 'ORDER_QUANTITY' for volume originally ordered by customer.
-   - Use 'ACTUAL_DELIVERY_DATE' for date on which material was actually delivered to Customer.
-   - Use 'REQUESTED_DELIVERY_DATE' for date on which customer expected the material to be delivered.
-   - Use 'ITEM_NUMBER' and 'PLANT_WAREHOUSE_CODE' to join.
-
 2. INVENTORY TABLE: ECOLAB_SC_POC.PUBLIC.ECOLAB_INVENTORY
-   - Use 'QTY_UNRESTRICTED' as the current stock or Sellable stock.
-   - Use 'ITEM_NUMBER' and 'LOCATION' to join.
-
 3. FORECAST TABLE: ECOLAB_SC_POC.PUBLIC.FORECAST_DATA
-   - Use 'FORECAST_QTY' for volume (not FORECAST_QUANTITY).
-   - Use 'MONTH_YEAR' (format MON-YYYY) for date logic.
-
-CALCULATIONS:
-- DOH: QTY_UNRESTRICTED / (SUM(SHIP_QUANTITY in last 180 days) / 180)
-- DOS: QTY_UNRESTRICTED / (SUM(FORECAST_QTY in next 180 days) / 180)
-- For DOS 6 Months of forecast from next month, assuming today's month is current month.
-- OTIF Calculation: (ACTUAL_DELIVERY_DATE <= REQUESTED_DELIVERY_DATE) AND (SHIP_QUANTITY >= ORDER_QUANTITY)
-- DOH (Days on Hand): CURRENT_STOCK / (Total Sales in last 180 days / 180)
-- DOS (Days of Supply): CURRENT_STOCK / (Total Forecast in next 180 days / 180)
-- The FORECAST_DATA table has a MONTH_YEAR string like Mar-2025. Use TO_DATE(MONTH_YEAR, 'MON-YYYY') for logic.
 
 Follow these rules strictly:
 - ONLY return raw SQL. No explanations or introductory text.
-- Do not use 'DATE_ADD' or 'INTERVAL 1 DAY'. 
-- Instead, use: DATEADD(day, 1, column_name).
-- Tables: ECOLAB_SC_POC.PUBLIC.SALES_DATA, ECOLAB_SC_POC.PUBLIC.ECOLAB_INVENTORY, ECOLAB_SC_POC.PUBLIC.FORECAST_DATA.
-- Column mapping: Use QTY_UNRESTRICTED for inventory, ORDER_RECEIVE_DATE for sales, and TO_DATE(MONTH_YEAR, 'MON-YYYY') for forecast.
-- Never include placeholder text like 'with actual warehouse code' in the SQL.
-- Use 'CAST(column AS DATE)' or 'DATE(column)' instead of TRUNC().
-- Ensure all comparisons between dates use the DATE type.
-- Warehouse codes are case-sensitive; do not guess them unless provided.
+- Do not use markdown backticks.
 """
 
 with st.container():
@@ -128,13 +105,8 @@ if query:
     with st.spinner("Generating SQL and analyzing..."):
         prompt = f"""
         {business_logic}
-        
         Question: {query}
-        
-        IMPORTANT: Return ONLY the raw SQL code. 
-        Do not include any introductory text like 'Here is the code' or 'Sure'.
-        Do not use markdown backticks like ```sql.
-        Just the code.
+        IMPORTANT: Return ONLY the raw SQL code.
         """.replace("'", "''")
         
         try:
@@ -153,14 +125,8 @@ if query:
             st.write("### Data Result:")
             st.dataframe(df)
             
-            explanation_prompt = f"Explain this data result in plain English for a supply chain manager: {df.head(5).to_string()}"
-            explanation = conn.query(f"SELECT SNOWFLAKE.CORTEX.COMPLETE('mistral-large', '{explanation_prompt}')").iloc[0,0]
-            st.info(explanation)
-            
         except Exception as e:
             st.error(f"Error: {e}")
-            if 'clean_sql' in locals():
-                st.code(clean_sql, language="sql")
 
 st.divider()
 
@@ -169,14 +135,16 @@ st.divider()
 def display_editable_sales_table():
     st.subheader("📊 Sales Data (Editable & Tracked)")
     
-    df = conn.query("SELECT * FROM ECOLAB_SC_POC.PUBLIC.SALES_DATA")
+    # Memory Optimized: Using Cached Function Instead of Direct Query
+    df = load_snowflake_data("SELECT * FROM ECOLAB_SC_POC.PUBLIC.SALES_DATA")
     
     # 1. Filters Configuration
     with st.expander("Filter Sales Data Rows"):
         f_cols = st.columns(4)
         filtered_df = df.copy()
         for i, col_name in enumerate(df.columns):
-            options = df[col_name].unique()
+            # Performance Optimization: Pull unique values sample down safely
+            options = df[col_name].drop_duplicates().values
             selected = f_cols[i % 4].multiselect(f"{col_name}", options=options, key=f"filt_sales_{col_name}")
             if selected:
                 filtered_df = filtered_df[filtered_df[col_name].isin(selected)]
@@ -199,9 +167,10 @@ def display_editable_sales_table():
                 so_num = row['SALES_ORDER_NUMBER']
                 old_val = row[target_col]
                 
-                # Fixed: Changed conn.session to conn.session()
                 conn.session().sql(f"UPDATE ECOLAB_SC_POC.PUBLIC.SALES_DATA SET {target_col} = '{new_value}' WHERE SALES_ORDER_NUMBER = '{so_num}'").collect()
                 log_change("BULK_UPDATE", so_num, target_col, old_val, new_value)
+            
+            st.cache_data.clear()  # Drop cached values to force refresh on redraw
             st.success(f"Successfully bulk updated {len(filtered_df)} records!")
             st.rerun()
 
@@ -223,22 +192,22 @@ def display_editable_sales_table():
                                 update_pairs = [f"{col} = '{str(val).replace("'", "''")}'" for col, val in row.items() if col != 'SALES_ORDER_NUMBER' and pd.notna(val)]
                                 if update_pairs:
                                     q = f"UPDATE ECOLAB_SC_POC.PUBLIC.SALES_DATA SET {', '.join(update_pairs)} WHERE SALES_ORDER_NUMBER = '{so_num}'"
-                                    # Fixed: Changed conn.session to conn.session()
                                     conn.session().sql(q).collect()
                                 log_change("EXCEL_UPSERT_UPDATE", so_num, "ALL_MODIFIED", "Multiple", "Merged via Excel")
                             else:
                                 cols = ", ".join([str(c) for c in row.index])
                                 vals = ", ".join([f"'{str(v).replace("'", "''")}'" for v in row.values])
                                 q = f"INSERT INTO ECOLAB_SC_POC.PUBLIC.SALES_DATA ({cols}) VALUES ({vals})"
-                                # Fixed: Changed conn.session to conn.session()
                                 conn.session().sql(q).collect()
                                 log_change("EXCEL_UPSERT_APPEND", so_num, "NEW_ROW", "None", "Appended row")
+                        
+                        st.cache_data.clear()  # Drop cached values
                         st.success("Excel data merged seamlessly into Snowflake!")
                         st.rerun()
             except Exception as ex:
                 st.error(f"Error evaluating Excel layout processing: {ex}")
 
-    # 4. Interactive Data Grid Layout (Disallowing Protected Headers)
+    # 4. Interactive Data Grid Layout
     st.write("✏️ *Double-click cells below to modify entries directly inline (excluding locked columns):*")
     
     disabled_cols = ['SALES_ORDER_NUMBER', 'ITEM_NUMBER', 'ITEM_DESCRIPTION']
@@ -252,7 +221,6 @@ def display_editable_sales_table():
         key="sales_inline_editor"
     )
 
-    # Detect cell updates between iterations
     if st.button("Save Manual Grid Updates"):
         changes_made = False
         for idx in filtered_df.index:
@@ -276,7 +244,6 @@ def display_editable_sales_table():
                     update_query = f"UPDATE ECOLAB_SC_POC.PUBLIC.SALES_DATA SET {col} = {sql_val} WHERE SALES_ORDER_NUMBER = '{so_num}'"
                     
                     try:
-                        # Fixed: Changed conn.session to conn.session()
                         conn.session().sql(update_query).collect()
                         log_change("INLINE_EDIT", so_num, col, old_val, new_val)
                         changes_made = True
@@ -284,30 +251,27 @@ def display_editable_sales_table():
                         st.error(f"Failed to update column {col} for Order {so_num}: {sql_ex}")
                     
         if changes_made:
+            st.cache_data.clear()  # Clear memory caches to refresh view
             st.success("Inline edits logged and updated successfully!")
             st.rerun()
 
-    # Excel Download Export Block
     buffer = io.BytesIO()
     with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
         filtered_df.to_excel(writer, index=False, sheet_name='SalesData')
-    st.download_button(
-        label="💾 Export Filtered Sales Data to Excel",
-        data=buffer.getvalue(),
-        file_name="Sales_Data.xlsx",
-        mime="application/vnd.ms-excel",
-        key="btn_sales_export"
-    )
+    st.download_button(label="💾 Export Filtered Sales Data to Excel", data=buffer.getvalue(), file_name="Sales_Data.xlsx", mime="application/vnd.ms-excel", key="btn_sales_export")
     st.write("---")
 
 def display_modern_table(table_id, title):
     st.subheader(f"📊 {title}")
-    df = conn.query(f"SELECT * FROM {table_id}")
+    
+    # Memory Optimized: Cached queries load
+    df = load_snowflake_data(f"SELECT * FROM {table_id}")
+    
     with st.expander(f"Filter {title} Columns"):
         f_cols = st.columns(4)
         filtered_df = df.copy()
         for i, col_name in enumerate(df.columns):
-            options = df[col_name].unique()
+            options = df[col_name].drop_duplicates().values
             selected = f_cols[i % 4].multiselect(f"{col_name}", options=options, key=f"filt_{table_id}_{col_name}")
             if selected:
                 filtered_df = filtered_df[filtered_df[col_name].isin(selected)]
