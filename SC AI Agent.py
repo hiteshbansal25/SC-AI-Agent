@@ -151,11 +151,17 @@ st.divider()
 
 def log_change(action_type, record_id, column, old_val, new_val):
     """Inserts an audit trail event directly into Snowflake."""
+    old_str = "" if pd.isna(old_val) else str(old_val).replace("'", "''")
+    new_str = "" if pd.isna(new_val) else str(new_val).replace("'", "''")
     query = f"""
         INSERT INTO ECOLAB_SC_POC.PUBLIC.CHANGE_LOG (ACTION_TYPE, RECORD_ID, COLUMN_CHANGED, OLD_VALUE, NEW_VALUE)
         VALUES ('{action_type}', '{record_id}', '{column}', '{str(old_val).replace("'", "''")}', '{str(new_val).replace("'", "''")}')
     """
-    conn.session.sql(query).collect()
+    try:
+        conn.session.sql(query).collect()
+    except Exception as log_err
+    # Prevent logging errors from crashing the main application flow
+        st.warning(f"Change made, but log entry could not be saved: {log_err}")
 
 def display_editable_sales_table():
     st.subheader("📊 Sales Data (Editable & Tracked)")
@@ -258,9 +264,27 @@ def display_editable_sales_table():
                 new_val = edited_df.loc[idx, col]
                 
                 if str(old_val) != str(new_val):
-                    conn.session.sql(f"UPDATE ECOLAB_SC_POC.PUBLIC.SALES_DATA SET {col} = '{str(new_val).replace("'", "''")}' WHERE SALES_ORDER_NUMBER = '{so_num}'").collect()
-                    log_change("INLINE_EDIT", so_num, col, old_val, new_val)
-                    changes_made = True
+                    # Format dynamic data types for SQL execution
+                    if pd.isna(new_val):
+                        sql_val = "NULL"
+                    elif isinstance(new_val, (int, float)):
+                        sql_val = f"{new_val}"
+                    elif 'DATE' in col.upper() or hasattr(new_val, 'strftime'):
+                        # Safely extract YYYY-MM-DD from Timestamp or Date objects
+                        formatted_date = new_val.strftime('%Y-%m-%d') if hasattr(new_val, 'strftime') else str(new_val)[:10]
+                        sql_val = f"'{formatted_date}'"
+                    else:
+                        clean_text = str(new_val).replace("'", "''")
+                        sql_val = f"'{clean_text}'"
+                        
+                    update_query = f"UPDATE ECOLAB_SC_POC.PUBLIC.SALES_DATA SET {col} = {sql_val} WHERE SALES_ORDER_NUMBER = '{so_num}'"
+                    
+                    try:
+                        conn.session.sql(update_query).collect()
+                        log_change("INLINE_EDIT", so_num, col, old_val, new_val)
+                        changes_made = True
+                    except Exception as sql_ex:
+                        st.error(f"Failed to update column {col} for Order {so_num}: {sql_ex}")
                     
         if changes_made:
             st.success("Inline edits logged and updated successfully!")
