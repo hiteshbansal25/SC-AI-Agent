@@ -156,8 +156,8 @@ def log_change(action_type, record_id, column, old_val, new_val):
         VALUES ('{action_type}', '{record_id}', '{column}', '{str(old_val).replace("'", "''")}', '{str(new_val).replace("'", "''")}')
     """
     # Execute inserting logic using the connection object session or internal runner
-    with conn.session as session:
-        session.sql(query).collect()
+   
+        conn.session.sql(query).collect()
 
 def display_editable_sales_table():
     st.subheader("📊 Sales Data (Editable & Tracked)")
@@ -195,8 +195,8 @@ def display_editable_sales_table():
                 old_val = row[target_col]
                 
                 # Execute direct updates
-                with conn.session as session:
-                    session.sql(f"UPDATE ECOLAB_SC_POC.PUBLIC.SALES_DATA SET {target_col} = '{new_value}' WHERE SALES_ORDER_NUMBER = '{so_num}'").collect()
+               # Fixed: Direct execution without 'with' context manager
+                conn.session.sql(f"UPDATE ECOLAB_SC_POC.PUBLIC.SALES_DATA SET {target_col} = '{new_value}' WHERE SALES_ORDER_NUMBER = '{so_num}'").collect()
                 log_change("BULK_UPDATE", so_num, target_col, old_val, new_value)
             st.success(f"Successfully bulk updated {len(filtered_df)} records!")
             st.rerun()
@@ -221,14 +221,14 @@ def display_editable_sales_table():
                                 update_pairs = [f"{col} = '{str(val).replace("'", "''")}'" for col, val in row.items() if col != 'SALES_ORDER_NUMBER' and pd.notna(val)]
                                 if update_pairs:
                                     q = f"UPDATE ECOLAB_SC_POC.PUBLIC.SALES_DATA SET {', '.join(update_pairs)} WHERE SALES_ORDER_NUMBER = '{so_num}'"
-                                    with conn.session as session: session.sql(q).collect()
+                                    conn.session.sql(q).collect()
                                 log_change("EXCEL_UPSERT_UPDATE", so_num, "ALL_MODIFIED", "Multiple", "Merged via Excel")
                             else:
                                 # Append Strategy
                                 cols = ", ".join([str(c) for c in row.index])
                                 vals = ", ".join([f"'{str(v).replace("'", "''")}'" for v in row.values])
                                 q = f"INSERT INTO ECOLAB_SC_POC.PUBLIC.SALES_DATA ({cols}) VALUES ({vals})"
-                                with conn.session as session: session.sql(q).collect()
+                                conn.session.sql(q).collect()
                                 log_change("EXCEL_UPSERT_APPEND", so_num, "NEW_ROW", "None", "Appended row")
                         st.success("Excel data merged seamlessly into Snowflake!")
                         st.rerun()
@@ -261,7 +261,7 @@ def display_editable_sales_table():
                 
                 if str(old_val) != str(new_val):
                     with conn.session as session:
-                        session.sql(f"UPDATE ECOLAB_SC_POC.PUBLIC.SALES_DATA SET {col} = '{str(new_val).replace("'", "''")}' WHERE SALES_ORDER_NUMBER = '{so_num}'").collect()
+                        conn.session.sql(f"UPDATE ECOLAB_SC_POC.PUBLIC.SALES_DATA SET {col} = '{str(new_val).replace("'", "''")}' WHERE SALES_ORDER_NUMBER = '{so_num}'").collect()
                     log_change("INLINE_EDIT", so_num, col, old_val, new_val)
                     changes_made = True
                     
