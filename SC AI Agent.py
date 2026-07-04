@@ -155,9 +155,7 @@ def log_change(action_type, record_id, column, old_val, new_val):
         INSERT INTO ECOLAB_SC_POC.PUBLIC.CHANGE_LOG (ACTION_TYPE, RECORD_ID, COLUMN_CHANGED, OLD_VALUE, NEW_VALUE)
         VALUES ('{action_type}', '{record_id}', '{column}', '{str(old_val).replace("'", "''")}', '{str(new_val).replace("'", "''")}')
     """
-    # Execute inserting logic using the connection object session or internal runner
-   
-        conn.session.sql(query).collect()
+    conn.session.sql(query).collect()
 
 def display_editable_sales_table():
     st.subheader("📊 Sales Data (Editable & Tracked)")
