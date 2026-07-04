@@ -159,7 +159,7 @@ def log_change(action_type, record_id, column, old_val, new_val):
     """
     try:
         conn.session.sql(query).collect()
-    except Exception as log_err
+    except Exception as log_err:
     # Prevent logging errors from crashing the main application flow
         st.warning(f"Change made, but log entry could not be saved: {log_err}")
 
