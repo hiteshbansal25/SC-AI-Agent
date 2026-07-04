@@ -23,7 +23,8 @@ conn = get_snowflake_conn()
 # --- Initialize Change Log Table if not exists ---
 def init_change_log():
     try:
-        conn.query("""
+        # Fixed: Changed conn.session to conn.session()
+        conn.session().sql("""
             CREATE TABLE IF NOT EXISTS ECOLAB_SC_POC.PUBLIC.CHANGE_LOG (
                 TIMESTAMP TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP(),
                 ACTION_TYPE VARCHAR,
@@ -32,11 +33,27 @@ def init_change_log():
                 OLD_VALUE VARCHAR,
                 NEW_VALUE VARCHAR
             )
-        """)
+        """).collect()
     except Exception as e:
         st.error(f"Failed to initialize change log table: {e}")
 
 init_change_log()
+
+# --- Helper function for Audit Logging ---
+def log_change(action_type, record_id, column, old_val, new_val):
+    """Inserts an audit trail event directly into Snowflake with defensive string casting."""
+    old_str = "" if pd.isna(old_val) else str(old_val).replace("'", "''")
+    new_str = "" if pd.isna(new_val) else str(new_val).replace("'", "''")
+    
+    query = f"""
+        INSERT INTO ECOLAB_SC_POC.PUBLIC.CHANGE_LOG (ACTION_TYPE, RECORD_ID, COLUMN_CHANGED, OLD_VALUE, NEW_VALUE)
+        VALUES ('{action_type}', '{record_id}', '{column}', '{old_str}', '{new_str}')
+    """
+    try:
+        # Fixed: Changed conn.session to conn.session()
+        conn.session().sql(query).collect()
+    except Exception as log_err:
+        st.warning(f"Change made, but log entry could not be saved: {log_err}")
 
 # --- 2. CUSTOM THEMING (Ecolab Blue & Castrol Green) ---
 st.set_page_config(page_title="SC Control Tower", layout="wide")
@@ -149,24 +166,9 @@ st.divider()
 
 # --- 5. DATA VISUALIZATION & MANAGEMENT TABLES ---
 
-def log_change(action_type, record_id, column, old_val, new_val):
-    """Inserts an audit trail event directly into Snowflake."""
-    old_str = "" if pd.isna(old_val) else str(old_val).replace("'", "''")
-    new_str = "" if pd.isna(new_val) else str(new_val).replace("'", "''")
-    query = f"""
-        INSERT INTO ECOLAB_SC_POC.PUBLIC.CHANGE_LOG (ACTION_TYPE, RECORD_ID, COLUMN_CHANGED, OLD_VALUE, NEW_VALUE)
-        VALUES ('{action_type}', '{record_id}', '{column}', '{str(old_val).replace("'", "''")}', '{str(new_val).replace("'", "''")}')
-    """
-    try:
-        conn.session.sql(query).collect()
-    except Exception as log_err:
-    # Prevent logging errors from crashing the main application flow
-        st.warning(f"Change made, but log entry could not be saved: {log_err}")
-
 def display_editable_sales_table():
     st.subheader("📊 Sales Data (Editable & Tracked)")
     
-    # Always fetch original complete dataframe to track changes accurately
     df = conn.query("SELECT * FROM ECOLAB_SC_POC.PUBLIC.SALES_DATA")
     
     # 1. Filters Configuration
@@ -185,7 +187,6 @@ def display_editable_sales_table():
         cols_allowed_to_edit = [c for c in df.columns if c not in ['SALES_ORDER_NUMBER', 'ITEM_NUMBER', 'ITEM_DESCRIPTION']]
         target_col = bulk_cols[0].selectbox("Column to update:", options=cols_allowed_to_edit)
         
-        # Adjust input variant mapping data types
         if pd.api.types.is_numeric_dtype(df[target_col]):
             new_value = bulk_cols[1].number_input("New Numerical Value:", value=0)
         elif pd.api.types.is_datetime64_any_dtype(df[target_col]) or "DATE" in target_col.upper():
@@ -198,9 +199,8 @@ def display_editable_sales_table():
                 so_num = row['SALES_ORDER_NUMBER']
                 old_val = row[target_col]
                 
-                # Execute direct updates
-               # Fixed: Direct execution without 'with' context manager
-                conn.session.sql(f"UPDATE ECOLAB_SC_POC.PUBLIC.SALES_DATA SET {target_col} = '{new_value}' WHERE SALES_ORDER_NUMBER = '{so_num}'").collect()
+                # Fixed: Changed conn.session to conn.session()
+                conn.session().sql(f"UPDATE ECOLAB_SC_POC.PUBLIC.SALES_DATA SET {target_col} = '{new_value}' WHERE SALES_ORDER_NUMBER = '{so_num}'").collect()
                 log_change("BULK_UPDATE", so_num, target_col, old_val, new_value)
             st.success(f"Successfully bulk updated {len(filtered_df)} records!")
             st.rerun()
@@ -217,22 +217,21 @@ def display_editable_sales_table():
                     if st.button("Commit Excel Upsert onto Snowflake"):
                         for _, row in uploaded_df.iterrows():
                             so_num = str(row['SALES_ORDER_NUMBER'])
-                            # Check if exists
                             exists = conn.query(f"SELECT COUNT(*) FROM ECOLAB_SC_POC.PUBLIC.SALES_DATA WHERE SALES_ORDER_NUMBER = '{so_num}'").iloc[0,0]
                             
                             if exists > 0:
-                                # Overwrite strategy: Update columns provided
                                 update_pairs = [f"{col} = '{str(val).replace("'", "''")}'" for col, val in row.items() if col != 'SALES_ORDER_NUMBER' and pd.notna(val)]
                                 if update_pairs:
                                     q = f"UPDATE ECOLAB_SC_POC.PUBLIC.SALES_DATA SET {', '.join(update_pairs)} WHERE SALES_ORDER_NUMBER = '{so_num}'"
-                                    conn.session.sql(q).collect()
+                                    # Fixed: Changed conn.session to conn.session()
+                                    conn.session().sql(q).collect()
                                 log_change("EXCEL_UPSERT_UPDATE", so_num, "ALL_MODIFIED", "Multiple", "Merged via Excel")
                             else:
-                                # Append Strategy
                                 cols = ", ".join([str(c) for c in row.index])
                                 vals = ", ".join([f"'{str(v).replace("'", "''")}'" for v in row.values])
                                 q = f"INSERT INTO ECOLAB_SC_POC.PUBLIC.SALES_DATA ({cols}) VALUES ({vals})"
-                                conn.session.sql(q).collect()
+                                # Fixed: Changed conn.session to conn.session()
+                                conn.session().sql(q).collect()
                                 log_change("EXCEL_UPSERT_APPEND", so_num, "NEW_ROW", "None", "Appended row")
                         st.success("Excel data merged seamlessly into Snowflake!")
                         st.rerun()
@@ -243,7 +242,6 @@ def display_editable_sales_table():
     st.write("✏️ *Double-click cells below to modify entries directly inline (excluding locked columns):*")
     
     disabled_cols = ['SALES_ORDER_NUMBER', 'ITEM_NUMBER', 'ITEM_DESCRIPTION']
-    # Dynamically build configurations to lock non-editable pillars
     col_config = {c: st.column_config.Column(disabled=True) for c in disabled_cols if c in filtered_df.columns}
 
     edited_df = st.data_editor(
@@ -258,19 +256,17 @@ def display_editable_sales_table():
     if st.button("Save Manual Grid Updates"):
         changes_made = False
         for idx in filtered_df.index:
-            so_num = filtered_df.loc[idx, 'SALES_ORDER_NUMBER']
+            so_num = str(filtered_df.loc[idx, 'SALES_ORDER_NUMBER'])
             for col in filtered_df.columns:
                 old_val = filtered_df.loc[idx, col]
                 new_val = edited_df.loc[idx, col]
                 
                 if str(old_val) != str(new_val):
-                    # Format dynamic data types for SQL execution
                     if pd.isna(new_val):
                         sql_val = "NULL"
                     elif isinstance(new_val, (int, float)):
                         sql_val = f"{new_val}"
                     elif 'DATE' in col.upper() or hasattr(new_val, 'strftime'):
-                        # Safely extract YYYY-MM-DD from Timestamp or Date objects
                         formatted_date = new_val.strftime('%Y-%m-%d') if hasattr(new_val, 'strftime') else str(new_val)[:10]
                         sql_val = f"'{formatted_date}'"
                     else:
@@ -280,7 +276,8 @@ def display_editable_sales_table():
                     update_query = f"UPDATE ECOLAB_SC_POC.PUBLIC.SALES_DATA SET {col} = {sql_val} WHERE SALES_ORDER_NUMBER = '{so_num}'"
                     
                     try:
-                        conn.session.sql(update_query).collect()
+                        # Fixed: Changed conn.session to conn.session()
+                        conn.session().sql(update_query).collect()
                         log_change("INLINE_EDIT", so_num, col, old_val, new_val)
                         changes_made = True
                     except Exception as sql_ex:
@@ -322,7 +319,7 @@ def display_modern_table(table_id, title):
     st.download_button(label=f"💾 Export Filtered {title} to Excel", data=buffer.getvalue(), file_name=f"{title.replace(' ', '_')}.xlsx", mime="application/vnd.ms-excel", key=f"btn_{table_id}")
     st.write("---")
 
-# Render Custom Interactive Table followed by rest standard tables
+# Render Tables
 display_editable_sales_table()
 display_modern_table("ECOLAB_SC_POC.PUBLIC.ECOLAB_INVENTORY", "Inventory Levels")
 display_modern_table("ECOLAB_SC_POC.PUBLIC.FORECAST_DATA", "Demand Forecasts")
