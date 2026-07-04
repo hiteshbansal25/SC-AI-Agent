@@ -258,8 +258,7 @@ def display_editable_sales_table():
                 new_val = edited_df.loc[idx, col]
                 
                 if str(old_val) != str(new_val):
-                    with conn.session as session:
-                        conn.session.sql(f"UPDATE ECOLAB_SC_POC.PUBLIC.SALES_DATA SET {col} = '{str(new_val).replace("'", "''")}' WHERE SALES_ORDER_NUMBER = '{so_num}'").collect()
+                    conn.session.sql(f"UPDATE ECOLAB_SC_POC.PUBLIC.SALES_DATA SET {col} = '{str(new_val).replace("'", "''")}' WHERE SALES_ORDER_NUMBER = '{so_num}'").collect()
                     log_change("INLINE_EDIT", so_num, col, old_val, new_val)
                     changes_made = True
                     
